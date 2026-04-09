@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 # =========================
-# 🎯 POLICY (ACTOR)
+# POLICY (ACTOR)
 # =========================
 class PolicyNetwork(nn.Module):
     def __init__(self):
@@ -17,7 +17,7 @@ class PolicyNetwork(nn.Module):
 
 
 # =========================
-# 🎯 VALUE (CRITIC)
+#VALUE (CRITIC)
 # =========================
 class ValueNetwork(nn.Module):
     def __init__(self):
@@ -29,7 +29,7 @@ class ValueNetwork(nn.Module):
 
 
 # =========================
-# ⚙️ SETUP
+# SETUP
 # =========================
 env = gym.make("CartPole-v1")
 
