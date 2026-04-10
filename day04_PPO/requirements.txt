@@ -1,0 +1,6 @@
+gymnasium
+numpy
+torch
+wandb
+tyro
+matplotlib
