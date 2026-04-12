@@ -1,0 +1,72 @@
+
+========================================
+N = 3 AJAN
+========================================
+
+Agent: agent_0
+Obs space : Box(-inf, inf, (18,), float32)
+Obs dim   : 18
+Act space : Discrete(5)
+Act dim   : 5
+
+Action anlamları:
+  0 → no_action
+  1 → left
+  2 → right
+  3 → down
+  4 → up
+
+Obs içeriği (N=3, toplam=18):
+  [0:2]              → kendi hızı (vx, vy)
+  [2:4]              → kendi pozisyonu (x, y)
+  [4:10]           → landmark rölatif pozisyonları (3 landmark × 2 = 6)
+  [10:14]         → diğer ajanların rölatif pozisyonları (2 ajan × 2 = 4)
+  [14:18]         → communication channel (4 değer)
+
+  NOT: IPPO'da communication channel sıfır —
+       ajanlar mesaj göndermiyor.
+       Gün 6'da CommNet ile bu kanal aktif hale gelecek.
+
+İlk reset sonrası örnek obs (agent_0):
+  Hız          : [0. 0.]
+  Pozisyon     : [-0.18492179  0.6321258 ]
+  Landmarks    : [ 0.82371    -1.2173954  -0.02045462 -0.63401026 -0.49784702 -1.3959537 ]
+  Diğer ajanlar: [-5.6243416e-02 -1.2136556e+00  6.0767770e-01 -8.9662930e-04]
+  Comm channel : [0. 0. 0. 0.]
+
+========================================
+N = 5 AJAN
+========================================
+
+Agent: agent_0
+Obs space : Box(-inf, inf, (30,), float32)
+Obs dim   : 30
+Act space : Discrete(5)
+Act dim   : 5
+
+Action anlamları:
+  0 → no_action
+  1 → left
+  2 → right
+  3 → down
+  4 → up
+
+Obs içeriği (N=5, toplam=30):
+  [0:2]              → kendi hızı (vx, vy)
+  [2:4]              → kendi pozisyonu (x, y)
+  [4:14]           → landmark rölatif pozisyonları (5 landmark × 2 = 10)
+  [14:22]         → diğer ajanların rölatif pozisyonları (4 ajan × 2 = 8)
+  [22:30]         → communication channel (8 değer)
+
+  NOT: IPPO'da communication channel sıfır —
+       ajanlar mesaj göndermiyor.
+       Gün 6'da CommNet ile bu kanal aktif hale gelecek.
+
+İlk reset sonrası örnek obs (agent_0):
+  Hız          : [0. 0.]
+  Pozisyon     : [0.5606621 0.6525434]
+  Landmarks    : [-0.35351577 -1.2199687  -0.11336185  0.00663898 -0.4315589  -0.48545617
+ -0.9327042  -0.38471413  0.01734123 -0.1748998 ]
+  Diğer ajanlar: [-1.2846192  -1.0382327   0.26614985 -1.4568799  -0.82595384 -1.2486223
+ -0.34378186 -0.6445799 ]
+  Comm channel : [0. 0. 0. 0. 0. 0. 0. 0.]
