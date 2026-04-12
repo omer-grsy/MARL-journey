@@ -165,7 +165,7 @@ def ppo_update(policy, optimizer, buf, device,
 # 5. TRAINING LOOP
 # =========================
 N_AGENTS             = 3
-N_UPDATES            = 2000
+N_UPDATES            = 500
 MAX_CYCLES           = 25
 ROLLOUT_LEN          = 500   # 25'in katı → 20 episode per rollout
 EPISODES_PER_ROLLOUT = ROLLOUT_LEN // MAX_CYCLES  # 20
@@ -203,6 +203,8 @@ for update in range(N_UPDATES):
     if update % 100 == 0:
         print(f"Update {update:4d}/{N_UPDATES} | Mean Reward: {mean_reward:.3f}")
 
+torch.save(policy.state_dict(), "ippo_policy.pth") #checkpoint
+print("Model kaydedildi: ippo_policy.pth")
 # =========================
 # 6. PLOT
 # =========================
