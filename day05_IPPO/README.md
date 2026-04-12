@@ -30,7 +30,9 @@ python simple_IPPO_n5.py    # 5 agents
 ```
 
 ## Render
+```bash
 python render_ippo.py
+```
 ![IPPO Demo](ippo_n3.gif)
 
 ## Results
