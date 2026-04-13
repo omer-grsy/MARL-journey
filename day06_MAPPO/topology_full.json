@@ -1,0 +1,22 @@
+{
+    "mode": "static",
+    "adj_matrix": [
+        [
+            0,
+            1,
+            1
+        ],
+        [
+            1,
+            0,
+            1
+        ],
+        [
+            1,
+            1,
+            0
+        ]
+    ],
+    "n_agents": 3,
+    "description": "Fully connected"
+}

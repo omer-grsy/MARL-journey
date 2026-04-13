@@ -1,0 +1,6 @@
+{
+    "mode": "dynamic",
+    "comm_radius": 1.0,
+    "n_agents": 3,
+    "description": "Distance-based dynamic"
+}
