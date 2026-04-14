@@ -1,0 +1,20 @@
+faults:
+
+  none:
+    type: none
+
+  fail_stop:
+    type: fail_stop
+    agents: ["agent_0"]
+    prob: 1.0
+
+  byzantine:
+    type: byzantine
+    agents: ["agent_0"]
+    prob: 1.0
+
+  intermittent:
+    type: intermittent
+    agents: ["agent_0", "agent_1"]
+    prob: 1.0
+    drop_prob: 0.5
