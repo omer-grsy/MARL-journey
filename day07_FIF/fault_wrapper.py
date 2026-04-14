@@ -138,7 +138,7 @@ FAULT_TYPE = "intermittent"
 
 env = FaultWrapper(env, cfg["faults"][FAULT_TYPE])
 
-print(cfg["faults"][FAULT_TYPE])
+#print(cfg["faults"][FAULT_TYPE])
 # =========================
 # TEST
 # =========================
@@ -150,4 +150,4 @@ for step in range(5):
     obs, rewards, terms, truncs, infos = env.step(actions)
 
     print(f"\nSTEP {step}")
-    print("agent_0 obs first 3:", obs["agent_0"][:3])
+    print("agent_0 obs first 4:", obs["agent_0"][:4])
