@@ -10,7 +10,7 @@ class FaultWrapper:
 
         self.fault_type = fault_config.get("type", "none")
         self.faulty_agents = fault_config.get("agents", [])
-
+        #self.drop_prob = fault_config.get("drop_prob", 0.5)
         # intermittent
         self.fault_period = fault_config.get("fault_period", 10)
         self.fault_duration = fault_config.get("fault_duration", 5)
@@ -109,17 +109,18 @@ class FaultWrapper:
 
                         start = 10 + j * 2
                         end = start + 2
-
-                        obs[agent][start:end] = np.random.uniform(
-                            -2.0, 2.0, 2
-                        ).astype(np.float32)
+                        fake_pos =  obs[agent][start:end]
+                        obs[agent][start:end] = -2 * fake_pos
+                        # obs[agent][start:end] = np.random.uniform(
+                        #     -2.0, 2.0, 2
+                        # ).astype(np.float32)
 
             return obs
 
         # -------- INTERMITTENT --------
         elif self.fault_type == "intermittent":
             for agent in self.faulty_agents:
-                if agent in obs and np.random.rand() < 0.5:
+                if agent in obs and np.random.rand() < 0.5: #if agent in obs and np.random.rand() < self.drop_prob:
                     obs[agent] = np.zeros_like(obs[agent])
             return obs
 
@@ -134,7 +135,7 @@ with open("config.yaml", "r") as f:
 
 env = simple_spread_v3.parallel_env(N=3)
 
-FAULT_TYPE = "intermittent"
+FAULT_TYPE = "byzantine"
 
 env = FaultWrapper(env, cfg["faults"][FAULT_TYPE])
 
