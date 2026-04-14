@@ -109,7 +109,7 @@ class FaultWrapper:
 
                         start = 10 + j * 2
                         end = start + 2
-                        fake_pos =  obs[agent][start:end]
+                        fake_pos =  obs[agent][start:end].copy()
                         obs[agent][start:end] = -2 * fake_pos
                         # obs[agent][start:end] = np.random.uniform(
                         #     -2.0, 2.0, 2
