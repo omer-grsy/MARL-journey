@@ -17,8 +17,8 @@ pip install -r requirements.txt
 ```bash
 bash run_all.sh
 ```
-## Goal
-The goal of this project is to analyze how multi-agent systems with communication behave under different fault conditions, focusing on robustness and coordination performance.
+## Configurations
+The `configs/` directory contains YAML files defining different fault scenarios (no fault, fail-stop, byzantine, intermittent) used in the experiments.
 
 ## Metrics
 - Coperative reward: Average shared reward received by all agents at each timestep
@@ -28,6 +28,9 @@ The goal of this project is to analyze how multi-agent systems with communicatio
 - Message entropy(approximate): Estimated entropy of communication messages derived from hidden states of agents.
 - Value loss : Mean squared error between the predicted state value and the computed return.
 - Policy loss : Clipped surrogate loss used to update the policy in PPO:
+
+## Goal
+The goal of this project is to analyze how multi-agent systems with communication behave under different fault conditions, focusing on robustness and coordination performance.
 
 ## Logging
 Experiments are logged using Weights & Biases (wandb).
