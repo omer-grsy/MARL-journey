@@ -1,0 +1,4 @@
+faults:
+  fail_stop:
+    type: fail_stop
+    agents: ["agent_0"]

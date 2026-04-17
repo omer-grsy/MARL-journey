@@ -1,0 +1,4 @@
+faults:
+  none:
+    type: none
+    agents: []

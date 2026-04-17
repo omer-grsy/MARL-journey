@@ -1,0 +1,4 @@
+faults:
+  byzantine:
+    type: byzantine
+    agents: ["agent_0"]
