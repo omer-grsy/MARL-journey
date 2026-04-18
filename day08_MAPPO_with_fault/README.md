@@ -34,3 +34,4 @@ The goal of this project is to analyze how multi-agent systems with communicatio
 
 ## Logging
 Experiments are logged using Weights & Biases (wandb).
+W&B dashboard: https://wandb.ai/dr-omer-gursoy-yildiz-technical-university/marl-fault-tolerance
