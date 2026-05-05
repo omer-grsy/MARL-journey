@@ -1,0 +1,28 @@
+# Day 9 shared defaults — scenario files override only what they change.
+# All three strategies read the same schema; unused keys are ignored.
+
+use_fault_indicator: true
+
+curriculum:
+  # Phase 1 (linear ramp): first 20% of updates, ramp 0 -> linear_max (gentle).
+  linear_frac: 0.2
+  linear_max: 0.2
+  # Phase 2 (adaptive): plateau-triggered bump.
+  plateau_window: 40
+  plateau_eps: 0.02
+  bump_step: 0.1
+  intensity_cap: 1.0
+
+detector:
+  k_threshold: 3.0
+  k_cv: 2.0
+  k_fleet: 0.7              # 1.5'ten düşürüldü (analitik tavan 1.0)
+  k_cos_drop: 0.35          # YENİ — sign-flip yakalar
+  k_coherence_drop: 0.3     # YENİ — random byzantine yakalar
+  ema_alpha: 0.05
+  hysteresis_M: 5
+  set_persistence_K: 3
+  warmup_updates: 30
+
+topology_manager:
+  keep_self_loop: true
