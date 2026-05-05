@@ -1,0 +1,7 @@
+
+torch>=2.0
+numpy>=1.24
+pyyaml>=6.0
+pettingzoo[mpe]>=1.24
+mpe2>=0.0.1
+wandb>=0.16
