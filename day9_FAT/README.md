@@ -52,3 +52,32 @@ Detector beş sinyal üretir: `z_self`, `z_cv`, `z_fleet`, `cos_drop`, `coherenc
 
 Strategy C tetiklenince `TopologyManager` faulty agent'ın in/out edge'lerini sıfırlar, self-loop kalır.
 
+## Demo Rollouts
+
+Eğitilmiş policy'lerin `simple_spread_v3` ortamındaki davranışları. Tüm GIF'ler `seed=0`, 100 step.
+
+### No-fault baseline
+
+| A (naive) | B (curriculum) | C (detect+adapt) |
+|-----------|----------------|-------------------|
+| ![](renders/demo_A_S1_nofault_seed0.gif) | ![](renders/demo_B_S1_nofault_seed0.gif) | ![](renders/demo_C_S1_nofault_seed0.gif) |
+
+### Fail-stop senaryosu
+
+| A (naive) | B (curriculum) | C (detect+adapt) |
+|-----------|----------------|-------------------|
+| ![](renders/demo_A_S2_fail_stop_seed0.gif) | ![](renders/demo_B_S2_fail_stop_seed0.gif) | ![](renders/demo_C_S2_fail_stop_seed0.gif) |
+
+### Byzantine senaryosu
+
+> **Day 9'un asıl bulgusu:** B byzantine'de coverage 0.145'e çöker, C topology reconfiguration ile 0.584'te stabil kalır. Aşağıda B'nin dağınık hareketleri ile C'nin koordineli landmark kaplaması görülebilir.
+
+| A (naive) | B (curriculum) | C (detect+adapt) |
+|-----------|----------------|-------------------|
+| ![](renders/demo_A_S3_byzantine_seed0.gif) | ![](renders/demo_B_S3_byzantine_seed0.gif) | ![](renders/demo_C_S3_byzantine_seed0.gif) |
+
+### Intermittent senaryosu
+
+| A (naive) | B (curriculum) | C (detect+adapt) |
+|-----------|----------------|-------------------|
+| ![](renders/demo_A_S4_intermittent_seed0.gif) | ![](renders/demo_B_S4_intermittent_seed0.gif) | ![](renders/demo_C_S4_intermittent_seed0.gif) |
