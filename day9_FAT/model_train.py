@@ -23,6 +23,7 @@ fault-injection diagram — you need a named point to inject the fault.
 from __future__ import annotations
 import argparse
 import json
+import multiprocessing as mp
 import os
 import sys
 import hashlib
@@ -64,15 +65,23 @@ PPO_EPOCHS = 4
 MINI_BATCH = 256
 
 ROLLOUT_STEPS = 1000
-TOTAL_UPDATES = 3000
+TOTAL_UPDATES = 5000   # 3000 → 5000 (3M → 5M timesteps)
+N_ENVS = 4             # parallel rollout workers (each collects ROLLOUT_STEPS)
+
+BYZANTINE_MAGNITUDE_START   = 0.3   # warmup başlangıç değeri
+BYZANTINE_MAGNITUDE_WARMUP_FRAC = 0.3  # ilk %30'da hedef magnitude'e ulaş
 
 ENTROPY_COEF = 0.015
 BYZANTINE_MAGNITUDE_DEFAULT = 1.0  # reduced from 2.0; 2.0 + intensity=1.0 collapses one seed on S3
 VF_COEF = 0.5
 MAX_GRAD_NORM = 0.5
 
-COVERAGE_THRESHOLD = 0.30
-COVERAGE_BONUS = 1.0
+COVERAGE_THRESHOLD = 0.30       # binary metric threshold (logging only)
+COMMIT_THRESHOLD = 0.15         # hard commitment radius for shaping bonus
+DENSE_SHARPNESS = 5.0           # exp(-d*5): good gradient up to d≈0.5
+DENSE_COEF = 0.5                # navigation gradient weight
+COMMIT_COEF = 0.8               # commitment jump weight (fires at d < COMMIT_THRESHOLD)
+SPREAD_COEF = 0.3               # unique landmark assignment weight (anti-clustering)
 REWARD_SCALE = 1.0
 
 CONV_COVERAGE_THRESHOLD = 0.6
@@ -105,14 +114,16 @@ class RunningMeanStd:
 
 
 def normalize_obs(o, rms, eps=1e-8):
-    return (o - rms.mean) / (np.sqrt(rms.var) + eps)
+    result = (o - rms.mean) / (np.sqrt(np.maximum(rms.var, 0.0)) + eps)
+    return np.nan_to_num(result, nan=0.0, posinf=10.0, neginf=-10.0)
 
 
 def compute_metrics(obs, agents, threshold=COVERAGE_THRESHOLD):
     if not obs:
-        return 0.0, 0.0, float('inf')
+        return 0.0, 0.0, 0.0, float('inf')
     min_dists = [float('inf')] * N_AGENTS
-    for a in agents:
+    closest_agent = [-1] * N_AGENTS
+    for ai, a in enumerate(agents):
         if a not in obs:
             continue
         o = obs[a]
@@ -121,14 +132,19 @@ def compute_metrics(obs, agents, threshold=COVERAGE_THRESHOLD):
             d = np.linalg.norm(rel)
             if d < min_dists[j]:
                 min_dists[j] = d
+                closest_agent[j] = ai
     valid = [d for d in min_dists if d != float('inf')]
     if not valid:
-        return 0.0, 0.0, float('inf')
+        return 0.0, 0.0, 0.0, float('inf')
 
-    coverage_dense = float(np.mean([np.exp(-d * 3.0) for d in valid]))
+    coverage_dense = float(np.mean([np.exp(-d * DENSE_SHARPNESS) for d in valid]))
+    coverage_commit = float(np.mean([1.0 if d < COMMIT_THRESHOLD else 0.0 for d in valid]))
     coverage_binary = sum(1 for d in valid if d < threshold) / N_AGENTS
+    # Ratio of landmarks assigned to distinct agents (0.33 = full cluster, 1.0 = ideal spread)
+    assigned = [c for c in closest_agent if c >= 0]
+    unique_ratio = len(set(assigned)) / N_AGENTS if assigned else 0.0
     avg_min_dist = float(np.mean(valid))
-    return coverage_dense, coverage_binary, avg_min_dist
+    return coverage_dense, coverage_commit, coverage_binary, unique_ratio, avg_min_dist
 
 
 def load_topology(path):
@@ -248,9 +264,11 @@ class CommNetActor(nn.Module):
         return self.encoder(obs_agents)
 
     def aggregate_and_policy(self, h, adj):            # h:(n,b,H), adj:(n,n)
+        h = torch.clamp(h, -10.0, 10.0)               # bound injected messages
         msg = torch.einsum("ij,jbd->ibd", adj, h)
         out = torch.cat([h, msg], dim=-1)
-        return self.policy(out)
+        logits = self.policy(out)
+        return torch.nan_to_num(logits, nan=0.0, posinf=10.0, neginf=-10.0)
 
     def forward(self, obs_agents, adj):
         h = self.encode(obs_agents)
@@ -355,18 +373,21 @@ def collect_rollout(env, actor, critic, agents,
                     curriculum, detector, topology_mgr,
                     use_fault_indicator, current_flags,
                     rng, byzantine_magnitude: float = 2.0,
-                    intermittent_prob: float = 0.3):
+                    intermittent_prob: float = 0.3,
+                    c_intensity: float = 1.0,
+                    rollout_steps: int = None):
     n = len(agents)
     base_obs_dim = env.observation_space(agents[0]).shape[0]
     obs_dim = base_obs_dim + (1 if use_fault_indicator else 0)
+    _T = rollout_steps if rollout_steps is not None else ROLLOUT_STEPS
 
-    buf_obs = np.zeros((n, ROLLOUT_STEPS, obs_dim), dtype=np.float32)
-    buf_obs_global = np.zeros((ROLLOUT_STEPS, n * obs_dim), dtype=np.float32)
-    buf_actions = np.zeros((n, ROLLOUT_STEPS), dtype=np.int64)
-    buf_logp = np.zeros((n, ROLLOUT_STEPS), dtype=np.float32)
-    buf_rewards = np.zeros(ROLLOUT_STEPS, dtype=np.float32)
-    buf_dones = np.zeros(ROLLOUT_STEPS, dtype=np.float32)
-    buf_values = np.zeros(ROLLOUT_STEPS, dtype=np.float32)
+    buf_obs = np.zeros((n, _T, obs_dim), dtype=np.float32)
+    buf_obs_global = np.zeros((_T, n * obs_dim), dtype=np.float32)
+    buf_actions = np.zeros((n, _T), dtype=np.int64)
+    buf_logp = np.zeros((n, _T), dtype=np.float32)
+    buf_rewards = np.zeros(_T, dtype=np.float32)
+    buf_dones = np.zeros(_T, dtype=np.float32)
+    buf_values = np.zeros(_T, dtype=np.float32)
 
     # Per-agent ||h_i|| statistics — mean and std fed to FaultDetector v2.
     # FaultDetector now takes (msg_norms_mean, msg_norms_std) rather than the
@@ -384,7 +405,7 @@ def collect_rollout(env, actor, critic, agents,
 
     obs, _ = env.reset()
 
-    for t in range(ROLLOUT_STEPS):
+    for t in range(_T):
         if not env.agents:
             obs, _ = env.reset()
 
@@ -396,6 +417,14 @@ def collect_rollout(env, actor, critic, agents,
 
         if strategy == "C" and topology_mgr is not None:
             adj = topology_mgr.reconfigure(adj_raw, current_flags)
+        elif strategy == "B" and topology_mgr is not None:
+            # Oracle flags: faulty agents are known; activate isolation only
+            # when the curriculum has actually turned the fault on.
+            oracle_flags_b = np.array([
+                i in set(faulty_indices) and curriculum is not None and curriculum.intensity > 0
+                for i in range(n)
+            ], dtype=bool)
+            adj = topology_mgr.reconfigure(adj_raw, oracle_flags_b)
         else:
             adj = adj_raw + torch.eye(n, device=device)
             deg = adj.sum(dim=1, keepdim=True).clamp(min=1.0)
@@ -431,13 +460,20 @@ def collect_rollout(env, actor, critic, agents,
         with torch.no_grad():
             h = actor.encode(obs_tensor)                           # (n, 1, H)
 
-            if strategy in ("B", "C"):
+            # All three strategies now receive message-level faults so the
+            # comparison is fair (A was previously fault-free at message level).
+            # A: full intensity (no curriculum protection, no topology fix).
+            # B: curriculum-ramp intensity (oracle knows who is faulty).
+            # C: linear warmup intensity (detector catches up during ramp).
+            if fault_type != "none" and faulty_indices:
                 if strategy == "A":
-                    intensity = 1.0
-                else:
-                    intensity = curriculum.intensity if curriculum is not None else 1.0
+                    _inject_intensity = 1.0
+                elif strategy == "B":
+                    _inject_intensity = curriculum.intensity if curriculum is not None else 1.0
+                else:  # C
+                    _inject_intensity = c_intensity
                 h = inject_message_faults(h, fault_type, faulty_indices,
-                                          intensity, rng,
+                                          _inject_intensity, rng,
                                           byzantine_magnitude=byzantine_magnitude,
                                           intermittent_prob=intermittent_prob)
 
@@ -472,10 +508,13 @@ def collect_rollout(env, actor, critic, agents,
 
         # --- Step env (action-level faults applied inside FaultWrapper) ---
         next_obs, rewards, terms, truncs, _ = env.step(actions)
-        cov_dense, cov_binary, avg_md = compute_metrics(next_obs, agents)
+        cov_dense, cov_commit, cov_binary, unique_ratio, avg_md = compute_metrics(next_obs, agents)
 
         shared_r = float(np.mean(list(rewards.values()))) if rewards else 0.0
-        shaped_r = REWARD_SCALE * shared_r + COVERAGE_BONUS * cov_dense
+        shaped_r = (REWARD_SCALE * shared_r
+                    + DENSE_COEF * cov_dense
+                    + COMMIT_COEF * cov_commit
+                    + SPREAD_COEF * unique_ratio)
         buf_rewards[t] = shaped_r
 
         any_done = False
@@ -605,13 +644,15 @@ def ppo_update(actor, critic, opt_a, opt_c, buf, rollout_adj=None):
 
             opt_a.zero_grad()
             (loss_a - ENTROPY_COEF * entropy).backward()
-            nn.utils.clip_grad_norm_(actor.parameters(), MAX_GRAD_NORM)
-            opt_a.step()
+            norm_a = nn.utils.clip_grad_norm_(actor.parameters(), MAX_GRAD_NORM)
+            if torch.isfinite(norm_a):
+                opt_a.step()
 
             opt_c.zero_grad()
             (VF_COEF * loss_c).backward()
-            nn.utils.clip_grad_norm_(critic.parameters(), MAX_GRAD_NORM)
-            opt_c.step()
+            norm_c = nn.utils.clip_grad_norm_(critic.parameters(), MAX_GRAD_NORM)
+            if torch.isfinite(norm_c):
+                opt_c.step()
 
             total_entropy += float(entropy.item())
             total_msg_entropy += float(msg_entropy.item())
@@ -621,6 +662,112 @@ def ppo_update(actor, critic, opt_a, opt_c, buf, rollout_adj=None):
 
     return (total_entropy / count, total_vloss / count,
             total_ploss / count, total_msg_entropy / count)
+
+
+# =========================
+# Magnitude warmup
+# =========================
+def get_byzantine_magnitude(update_idx, total_updates, target):
+    """Linear ramp from BYZANTINE_MAGNITUDE_START to target over first
+    BYZANTINE_MAGNITUDE_WARMUP_FRAC of training. Lets the policy establish
+    basic behaviour before full-strength adversarial embeddings arrive."""
+    warmup_end = max(1, int(total_updates * BYZANTINE_MAGNITUDE_WARMUP_FRAC))
+    if update_idx >= warmup_end:
+        return target
+    return BYZANTINE_MAGNITUDE_START + (target - BYZANTINE_MAGNITUDE_START) * (update_idx / warmup_end)
+
+
+# =========================
+# Parallel rollout worker
+# =========================
+def _rollout_worker(args):
+    """
+    Spawned worker: collects one rollout on CPU.
+    globals()['device'] override is process-local (spawn isolation).
+    """
+    globals()['device'] = torch.device('cpu')
+
+    (worker_seed, env_intensity, c_intensity,
+     fault_cfg_dict, topo_path, strategy, curriculum_intensity,
+     current_flags_list, use_fault_indicator, actor_sd, critic_sd,
+     obs_dim_w, act_dim_w, base_obs_dim_w, byzantine_magnitude_w,
+     intermittent_prob_w, keep_self_loop_w, rollout_steps_w,
+     obs_rms_mean_w, obs_rms_var_w, obs_rms_count_w) = args
+
+    env_w = FaultWrapper(
+        simple_spread_v3.parallel_env(N=N_AGENTS, max_cycles=MAX_CYCLES),
+        fault_cfg_dict, intensity=env_intensity,
+    )
+    agents_w = env_w.possible_agents
+
+    actor_w = CommNetActor(obs_dim_w, act_dim_w)
+    actor_w.load_state_dict(actor_sd)
+    actor_w.eval()
+    critic_w = MAPPOCritic(obs_dim_w)
+    critic_w.load_state_dict(critic_sd)
+    critic_w.eval()
+
+    obs_rms_w = RunningMeanStd(shape=(base_obs_dim_w,))
+    obs_rms_w.mean  = np.array(obs_rms_mean_w,  dtype=np.float64)
+    obs_rms_w.var   = np.array(obs_rms_var_w,   dtype=np.float64)
+    obs_rms_w.count = float(obs_rms_count_w)
+    topo_mode_w, static_adj_w, comm_radius_w = load_topology(topo_path)
+
+    topology_mgr_w = None
+    if strategy in ('B', 'C'):
+        topology_mgr_w = TopologyManager(n_agents=N_AGENTS, keep_self_loop=keep_self_loop_w)
+
+    class _Cur:
+        def __init__(self, i): self.intensity = i
+    curriculum_w = _Cur(curriculum_intensity) if strategy == 'B' else None
+
+    buf = collect_rollout(
+        env_w, actor_w, critic_w, agents_w,
+        topo_mode_w, static_adj_w, comm_radius_w,
+        obs_rms_w, fault_cfg_dict, strategy,
+        curriculum_w, None, topology_mgr_w,
+        use_fault_indicator, np.array(current_flags_list, dtype=bool),
+        np.random.default_rng(worker_seed),
+        byzantine_magnitude=byzantine_magnitude_w,
+        intermittent_prob=intermittent_prob_w,
+        c_intensity=c_intensity,
+        rollout_steps=rollout_steps_w,
+    )
+    buf["obs_rms_mean"]  = obs_rms_w.mean.copy()
+    buf["obs_rms_var"]   = obs_rms_w.var.copy()
+    buf["obs_rms_count"] = obs_rms_w.count
+    return buf
+
+
+def aggregate_rollouts(bufs):
+    """Concatenate N parallel rollout buffers into one for the PPO update."""
+    combined = {}
+    for k in ('obs', 'actions', 'logp'):
+        combined[k] = np.concatenate([b[k] for b in bufs], axis=1)
+    for k in ('obs_global', 'adv', 'ret', 'values'):
+        combined[k] = np.concatenate([b[k] for b in bufs], axis=0)
+    for k in ('raw_reward', 'coverage', 'avg_dist'):
+        combined[k] = float(np.mean([b[k] for b in bufs]))
+    # Weighted aggregation of per-agent norm statistics for the detector
+    n_steps = bufs[0]['obs'].shape[1]
+    total = n_steps * len(bufs)
+    norm_sum = sum(b['msg_norms_mean'] * n_steps for b in bufs)
+    sq_sum   = sum((b['msg_norms_std'] ** 2 + b['msg_norms_mean'] ** 2) * n_steps for b in bufs)
+    comb_mean = norm_sum / total
+    combined['msg_norms_mean'] = comb_mean
+    combined['msg_norms_std']  = np.sqrt(np.maximum(sq_sum / total - comb_mean ** 2, 0))
+    combined['msg_h_mean']     = np.mean([b['msg_h_mean'] for b in bufs], axis=0)
+    combined['rollout_adj']    = bufs[0]['rollout_adj']
+
+    # Combine obs_rms states: all workers started from the same base state.
+    # Average their final mean/var; count comes from one worker only to avoid
+    # the N×base_count accumulation that causes exponential overflow.
+    if 'obs_rms_mean' in bufs[0]:
+        combined['obs_rms_mean']  = np.mean([b['obs_rms_mean'] for b in bufs], axis=0)
+        combined['obs_rms_var']   = np.mean([b['obs_rms_var']  for b in bufs], axis=0)
+        combined['obs_rms_count'] = bufs[0]['obs_rms_count']  # linear growth only
+
+    return combined
 
 
 # =========================
@@ -651,6 +798,11 @@ def main():
     if args.rollout_steps is not None:
         ROLLOUT_STEPS = args.rollout_steps
 
+    # Spawn pool BEFORE any CUDA operation (load_topology, model.to(device)).
+    # spawn context: workers are fresh processes, no CUDA fork hazard.
+    _mp_ctx = mp.get_context('spawn')
+    pool = _mp_ctx.Pool(N_ENVS) if N_ENVS > 1 else None
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     rng = np.random.default_rng(args.seed)
@@ -668,9 +820,11 @@ def main():
 
     # --- wandb ---
     if args.wandb and _WANDB_AVAILABLE:
+        os.makedirs("wandb_v2", exist_ok=True)
         wandb.init(
-            project="marl-fault-tolerance_day9_faf",
-            name=f"day9_new_{args.strategy}_{scenario}_seed{args.seed}",
+            project="marl-fault-tolerance_v2",
+            dir="wandb_v2",
+            name=f"day9_v2_{args.strategy}_{scenario}_seed{args.seed}",
             config={**cfg, "strategy": args.strategy, "seed": args.seed,
                     "cfg_hash": cfg_hash,
                     "total_updates": TOTAL_UPDATES,
@@ -714,6 +868,13 @@ def main():
             bump_step=ccfg.get("bump_step", 0.1),
             intensity_cap=ccfg.get("intensity_cap", 1.0),
         )
+        # B also gets topology isolation via oracle flags, matching C's
+        # isolation mechanism but using ground-truth instead of detector.
+        tcfg = cfg.get("topology_manager", {})
+        topology_mgr = TopologyManager(
+            n_agents=N_AGENTS,
+            keep_self_loop=tcfg.get("keep_self_loop", True),
+        )
     elif args.strategy == "C":
         dcfg = cfg.get("detector", {})
         detector = FaultDetector(
@@ -733,34 +894,73 @@ def main():
             n_agents=N_AGENTS,
             keep_self_loop=tcfg.get("keep_self_loop", True),
         )
-        # For C, faults are on at full intensity from the start.
-        env.intensity = 1.0
+        # C fault intensity ramps from 0 to 1 over the first C_WARMUP_FRAC of
+        # training (see training loop). This aligns with detector warmup so the
+        # topology reconfiguration is active before full-strength attacks arrive.
+        env.intensity = 0.0
 
     current_flags = np.zeros(N_AGENTS, dtype=bool)
     converged_step = None
     last_buf = None
     byzantine_magnitude = float(cfg.get("byzantine_magnitude", BYZANTINE_MAGNITUDE_DEFAULT))
-    # Intermittent dropout probability (curriculum intensity ile çarpılır).
-    # Config'de scenario-level "fault.prob" ile override edilebilir.
     intermittent_prob = float(fault_cfg.get("prob", 0.3))
+    keep_self_loop = cfg.get("topology_manager", {}).get("keep_self_loop", True)
+
+    # C ramps fault intensity over first 15% of training, matching detector warmup.
+    C_WARMUP_FRAC = 0.15
+    c_warmup_end = max(1, int(TOTAL_UPDATES * C_WARMUP_FRAC))
 
     for update in range(TOTAL_UPDATES):
-        # Curriculum: set env + fault-injection intensity.
+        # Curriculum: set env + fault-injection intensity (strategy B).
         if curriculum is not None:
             recent_reward = (last_buf["raw_reward"]
                              if last_buf is not None else 0.0)
             intensity = curriculum.step(update, recent_reward)
             env.intensity = intensity
 
-        buf = collect_rollout(
-            env, actor, critic, agents,
-            topo_mode, static_adj_raw, comm_radius,
-            obs_rms, fault_cfg, args.strategy,
-            curriculum, detector, topology_mgr,
-            use_fault_indicator, current_flags, rng,
-            byzantine_magnitude=byzantine_magnitude,
-            intermittent_prob=intermittent_prob,
-        )
+        # Strategy C: linear fault warmup.
+        c_intensity = 1.0
+        if args.strategy == "C":
+            c_intensity = min(1.0, update / c_warmup_end)
+            env.intensity = c_intensity
+
+        # Magnitude warmup: Byzantine saldırısının şiddeti ilk %30'da 0.3→hedef.
+        current_magnitude = get_byzantine_magnitude(update, TOTAL_UPDATES, byzantine_magnitude)
+
+        if pool is not None:
+            # Build per-worker args; each worker gets a unique seed offset.
+            curriculum_intensity = curriculum.intensity if curriculum is not None else 1.0
+            actor_sd = {k: v.cpu() for k, v in actor.state_dict().items()}
+            critic_sd = {k: v.cpu() for k, v in critic.state_dict().items()}
+            worker_args = [
+                (args.seed + update * N_ENVS + w,
+                 env.intensity, c_intensity,
+                 fault_cfg, args.topology, args.strategy, curriculum_intensity,
+                 current_flags.tolist(), use_fault_indicator,
+                 actor_sd, critic_sd,
+                 obs_dim, act_dim, base_obs_dim,
+                 current_magnitude, intermittent_prob, keep_self_loop, ROLLOUT_STEPS,
+                 obs_rms.mean.copy(), obs_rms.var.copy(), float(obs_rms.count))
+                for w in range(N_ENVS)
+            ]
+            bufs = pool.map(_rollout_worker, worker_args)
+            buf = aggregate_rollouts(bufs)
+            # Propagate accumulated obs statistics back to main process.
+            if 'obs_rms_mean' in buf:
+                obs_rms.mean  = buf['obs_rms_mean'].copy()
+                obs_rms.var   = buf['obs_rms_var'].copy()
+                obs_rms.count = buf['obs_rms_count']
+        else:
+            buf = collect_rollout(
+                env, actor, critic, agents,
+                topo_mode, static_adj_raw, comm_radius,
+                obs_rms, fault_cfg, args.strategy,
+                curriculum, detector, topology_mgr,
+                use_fault_indicator, current_flags, rng,
+                byzantine_magnitude=current_magnitude,
+                intermittent_prob=intermittent_prob,
+                c_intensity=c_intensity,
+            )
 
         # Detector step (strategy C only).
         if detector is not None:
@@ -818,6 +1018,10 @@ def main():
 
         last_buf = buf
 
+    if pool is not None:
+        pool.close()
+        pool.join()
+
     # --- Summary ---
     final = {
         "final_reward": last_buf["raw_reward"],
@@ -834,7 +1038,7 @@ def main():
         for k, v in final.items():
             wandb.summary[k] = v
 
-    os.makedirs("checkpoints", exist_ok=True)
+    os.makedirs("checkpoints_v2", exist_ok=True)
     torch.save({
         "actor": actor.state_dict(),
         "critic": critic.state_dict(),
@@ -846,7 +1050,7 @@ def main():
         "args": vars(args),
         "final": final,
         "detector_summary": detector.summary() if detector is not None else None,
-    }, f"checkpoints/day9_new_{args.strategy}_{scenario}_seed{args.seed}.pt")
+    }, f"checkpoints_v2/day9_v2_{args.strategy}_{scenario}_seed{args.seed}.pt")
 
     return final
 
