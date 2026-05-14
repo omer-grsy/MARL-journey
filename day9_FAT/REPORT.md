@@ -70,9 +70,9 @@ Arıza senaryoları bu sorunları daha da derinleştirmektedir: arızalı bir aj
 
 Bu sorunları gidermek amacıyla ham ödülün üzerine üç ek bileşen eklenmiştir. Eğitimde kullanılan toplam ödül şöyledir:
 
-$$r_{\text{shaped}} = \underbrace{r_{\text{ham}}}_{\text{ortam ödülü}} + \underbrace{\alpha \cdot \frac{1}{N}\sum_{j=1}^{N} e^{-\sigma d_j}}_{\text{(1) Navigasyon gradyanı}} + \underbrace{\beta \cdot \frac{1}{N}\sum_{j=1}^{N} \mathbf{1}[d_j < \tau]}_{\text{(2) Commitment bonus}} + \underbrace{\gamma \cdot \text{unique\_ratio}}_{\text{(3) Yayılma bonusu}}$$
+$$r_{\text{shaped}} = \underbrace{r_{\text{ham}}}_{\text{ortam ödülü}} + \underbrace{\alpha \cdot \frac{1}{N}\sum_{j=1}^{N} e^{-\sigma d_j}}_{\text{(1) Navigasyon}} + \underbrace{\beta \cdot \frac{1}{N}\sum_{j=1}^{N} \mathbf{1}[d_j < \tau]}_{\text{(2) Commitment}} + \underbrace{\gamma \cdot u_{r}}_{\text{(3) Yayılma}}$$
 
-Ham ödül $r_{\text{ham}}$ korunmaktadır; bu sayede çarpışma cezası ve mesafe bilgisi sinyali kaybolmaz. Eklenen üç terim bu sinyali güçlendirmek ve eksik teşvikleri tamamlamak amacıyla tasarlanmıştır. Kullanılan değerler: $\alpha=0.5$, $\beta=0.8$, $\gamma=0.3$, $\sigma=5.0$, $\tau=0.15$.
+Ham ödül $r_{\text{ham}}$ korunmaktadır; bu sayede çarpışma cezası ve mesafe bilgisi sinyali kaybolmaz. Eklenen üç terim bu sinyali güçlendirmek ve eksik teşvikleri tamamlamak amacıyla tasarlanmıştır. $u_r$ sembolü `unique_ratio`'yu temsil etmektedir. Kullanılan değerler: $\alpha=0.5$, $\beta=0.8$, $\gamma=0.3$, $\sigma=5.0$, $\tau=0.15$.
 
 **Bileşen 1 — Navigasyon Gradyanı ($e^{-\sigma d}$):** Gaussian benzeri bu terim, her mesafe değeri için sıfırdan farklı bir gradient üretir. $\sigma=5.0$ ile $d \approx 0.5$'e kadar anlamlı gradient korunur. Başlangıçta $\sigma=8.0$ denenmiş; ancak $e^{-8 \times 0.4} \approx 0.04$ gibi çok küçük değerler üreterek ajan landmark'tan uzaktayken gradient açlığına (reward starvation) ve entropy çöküşüne yol açmıştır. $\sigma=5.0$'a geçiş bu sorunu çözmüştür.
 
@@ -80,7 +80,7 @@ Ham ödül $r_{\text{ham}}$ korunmaktadır; bu sayede çarpışma cezası ve mes
 
 **Bileşen 3 — Yayılma Bonusu** (`unique_ratio`)**:** Bu terim kümelenme problemini doğrudan hedef alır. `unique_ratio`, kaç farklı ajanın en az bir landmark'a en yakın ajan olduğunun $N$'e oranıdır:
 
-$$\text{unique\_ratio} = \frac{|\{\arg\min_i \|p_i - l_j\| : j = 1,\ldots,N\}|}{N}$$
+$$u_r = \frac{|\{\arg\min_i \|p_i - l_j\| : j = 1,\ldots,N\}|}{N}$$
 
 Tüm ajanlar aynı landmark'ı kaplarsa `unique_ratio` $= 1/N = 0.33$; her ajan farklı bir landmark'ı kaplarsa `unique_ratio` $= 1.0$. Bu terim, ajanları birbirinden uzak landmark'lara yönelmeye zorlar ve koordinasyonu ödül seviyesinde kodlar.
 
