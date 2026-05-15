@@ -120,7 +120,7 @@ def normalize_obs(o, rms, eps=1e-8):
 
 def compute_metrics(obs, agents, threshold=COVERAGE_THRESHOLD):
     if not obs:
-        return 0.0, 0.0, 0.0, float('inf')
+        return 0.0, 0.0, 0.0, 0.0, float('inf')
     min_dists = [float('inf')] * N_AGENTS
     closest_agent = [-1] * N_AGENTS
     for ai, a in enumerate(agents):
@@ -135,7 +135,7 @@ def compute_metrics(obs, agents, threshold=COVERAGE_THRESHOLD):
                 closest_agent[j] = ai
     valid = [d for d in min_dists if d != float('inf')]
     if not valid:
-        return 0.0, 0.0, 0.0, float('inf')
+        return 0.0, 0.0, 0.0, 0.0, float('inf')
 
     coverage_dense = float(np.mean([np.exp(-d * DENSE_SHARPNESS) for d in valid]))
     coverage_commit = float(np.mean([1.0 if d < COMMIT_THRESHOLD else 0.0 for d in valid]))
@@ -417,14 +417,6 @@ def collect_rollout(env, actor, critic, agents,
 
         if strategy == "C" and topology_mgr is not None:
             adj = topology_mgr.reconfigure(adj_raw, current_flags)
-        elif strategy == "B" and topology_mgr is not None:
-            # Oracle flags: faulty agents are known; activate isolation only
-            # when the curriculum has actually turned the fault on.
-            oracle_flags_b = np.array([
-                i in set(faulty_indices) and curriculum is not None and curriculum.intensity > 0
-                for i in range(n)
-            ], dtype=bool)
-            adj = topology_mgr.reconfigure(adj_raw, oracle_flags_b)
         else:
             adj = adj_raw + torch.eye(n, device=device)
             deg = adj.sum(dim=1, keepdim=True).clamp(min=1.0)
@@ -714,7 +706,7 @@ def _rollout_worker(args):
     topo_mode_w, static_adj_w, comm_radius_w = load_topology(topo_path)
 
     topology_mgr_w = None
-    if strategy in ('B', 'C'):
+    if strategy == 'C':
         topology_mgr_w = TopologyManager(n_agents=N_AGENTS, keep_self_loop=keep_self_loop_w)
 
     class _Cur:
@@ -867,13 +859,6 @@ def main():
             plateau_eps=ccfg.get("plateau_eps", 0.02),
             bump_step=ccfg.get("bump_step", 0.1),
             intensity_cap=ccfg.get("intensity_cap", 1.0),
-        )
-        # B also gets topology isolation via oracle flags, matching C's
-        # isolation mechanism but using ground-truth instead of detector.
-        tcfg = cfg.get("topology_manager", {})
-        topology_mgr = TopologyManager(
-            n_agents=N_AGENTS,
-            keep_self_loop=tcfg.get("keep_self_loop", True),
         )
     elif args.strategy == "C":
         dcfg = cfg.get("detector", {})
