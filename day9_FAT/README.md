@@ -1,11 +1,81 @@
-# Day 9 — Fault-aware Training(Curriculum learning) + Topology Adaptation
+# Day 9 — Fault-Aware Training: Curriculum Learning + Topology Adaptation
 
-MAPPO + CommNet üzerine fault-tolerant MARL. `simple_spread_v3` (mpe2 / PettingZoo), N=3 cooperative agent.
+MAPPO + CommNet tabanlı arıza toleranslı çok ajanlı öğrenme. `simple_spread_v3` (mpe2 / PettingZoo), N=3 kooperatif ajan, N=3 landmark.
 
 Üç strateji karşılaştırılmaktadır:
-- **A** — naive baseline, fault'a duyarsız
-- **B** — fault-aware curriculum + ground-truth fault indicator
-- **C** — online detector + topology reconfiguration
+
+| Strateji | Açıklama |
+|---|---|
+| **A** | Naive baseline — arıza farkındalığı yok |
+| **B** | Curriculum learning — arıza şiddeti kademeli artırılır, fault indicator gözleme eklenir |
+| **C** | Online fault detection + topology reconfiguration (oracle bilgisi gerektirmez) |
+
+## Sonuçlar (3 seed ortalaması)
+
+**Kapsam Oranı (Coverage)**
+
+| Senaryo | A | B | C |
+|---|---|---|---|
+| S1 – Arızasız | 0.830 | 0.830 | 0.833 |
+| S2 – Fail-stop | 0.370 | 0.644 | 0.642 |
+| S3 – Byzantine | 0.063 | 0.257 | **0.628** |
+| S4 – Intermittent | 0.650 | 0.651 | 0.648 |
+
+**Reward**
+
+| Senaryo | A | B | C |
+|---|---|---|---|
+| S1 – Arızasız | -0.302 | -0.294 | -0.291 |
+| S2 – Fail-stop | -0.698 | -0.444 | -0.460 |
+| S3 – Byzantine | -1.761 | -0.960 | **-0.480** |
+| S4 – Intermittent | -0.455 | -0.455 | -0.450 |
+
+**Temel bulgular:**
+- **S2 Fail-stop:** B ≈ C — curriculum tek başına topology isolation kadar etkili
+- **S3 Byzantine:** C açık farkla kazanıyor (0.628 vs 0.257); curriculum adversarial mesajlara yetmiyor, aktif izolasyon şart
+- **S4 Intermittent:** Üç strateji özdeş — stokastik dropout doğası gereği tolere ediliyor
+- **Detector:** Tüm C deneyleri boyunca precision=1.0, recall≥0.987 — sıfır yanlış alarm
+
+## Mimari
+
+**CommNetActor** iki aşamada çalışır:
+
+```
+encode(obs) → h_i          # her ajan gizli vektör üretir
+    ↓
+inject_message_faults()    # arıza enjeksiyonu burada (mesaj seviyesinde)
+    ↓
+aggregate_and_policy(h, A) # komşu mesajları adjacency ile toplanır → aksiyon
+```
+
+İki metodun ayrılması arıza enjeksiyonunu mimari değişikliği gerektirmeden mümkün kılar.
+
+**FaultDetector (v4)** beş sinyal üretir:
+
+| Sinyal | Açıklama |
+|---|---|
+| `z_self` | Ajanın norm geçmişine göre z-skoru |
+| `z_cv` | Norm değişim katsayısının z-skoru |
+| `z_fleet` | Filo median'ından sapma |
+| `cos_drop` | Cosine benzerliğindeki düşüş |
+| `coherence_drop` | EMA kohezyon düşüşü |
+
+K=3 sinyal eşiği aşarsa → suspect; M=5 ardışık adım suspect → flagged (histerezis).
+
+**TopologyManager:** Flagged ajanın adjacency matrisindeki tüm in/out edge'lerini sıfırlar, self-loop korunur.
+
+**CurriculumScheduler (Strateji B):** Arıza intensity'sini 0→1 doğrusal ramp ile artırır; kapsam plato yaptığında bump mekanizmasıyla sıçramalı artış uygular.
+
+## Reward Shaping
+
+Ham MPE ödülüne üç bileşen eklendi:
+
+```
+r_shaped = r_ham
+         + 0.5 * mean(exp(-5 * d_j))   # navigasyon gradyanı
+         + 0.8 * mean(1[d_j < 0.15])   # commitment bonusu
+         + 0.3 * unique_ratio           # yayılma bonusu (kümelenme önleme)
+```
 
 ## Kurulum
 
@@ -13,8 +83,6 @@ MAPPO + CommNet üzerine fault-tolerant MARL. `simple_spread_v3` (mpe2 / Petting
 conda create -n rl-env python=3.10
 conda activate rl-env
 pip install -r requirements.txt
-# ya da:
-# pip install torch numpy pyyaml pettingzoo[mpe] mpe2 wandb
 ```
 
 ## Çalıştırma
@@ -22,62 +90,73 @@ pip install -r requirements.txt
 Tek koşu:
 
 ```bash
-python model_train.py --config configs/S3_byzantine.yaml --strategy C --seed 0 \
-                --topology configs/topology_full.json
+python model_train.py \
+    --config configs/S3_byzantine.yaml \
+    --strategy C \
+    --seed 0 \
+    --topology configs/topology_full.json \
+    --wandb
 ```
 
-Tüm matris (3 strateji × 4 senaryo × 3 seed):
+Tam sweep (3 strateji × 4 senaryo × 3 seed = 36 run):
 
 ```bash
 bash run_all.sh
 ```
 
-Önemli flag'ler: `--total_updates`, `--rollout_steps` (smoke test için override), `--wandb` (W&B logging).
+Smoke test (hızlı doğrulama):
 
-Çıktı: `checkpoints/day9_{strategy}_{scenario}_seed{seed}.pt`.
+```bash
+bash run_all.sh smoke
+```
 
-## Repo yapısı
+Çıktı: `checkpoints_v2/day9_v2_{strategy}_{scenario}_seed{seed}.pt`
 
-- `train.py` - MAPPO + CommNet training loop, fault injection, detector entegrasyonu
-- `src/adaptation.py` - `CurriculumScheduler`, `FaultDetector` (5 sinyal), `TopologyManager`
-- `configs/` - senaryo YAML'leri ve topology JSON
-- `run_all.sh` - full sweep
-- `requirements.txt` - gerekli modüller
+## Repo Yapısı
 
-## Kısa mimari not
+```
+day9_FAT/
+├── model_train.py       # MAPPO + CommNet eğitim döngüsü, paralel rollout, fault injection
+├── render.py            # eğitilmiş checkpoint'ten GIF render
+├── src/adaptation.py    # CurriculumScheduler, FaultDetector, TopologyManager
+├── configs/
+│   ├── S1_nofault.yaml
+│   ├── S2_fail_stop.yaml
+│   ├── S3_byzantine.yaml
+│   ├── S4_intermittent.yaml
+│   └── topology_full.json
+├── checkpoints_v2/      # eğitilmiş modeller
+├── renders_new/         # demo GIF'ler
+├── run_all.sh           # tam sweep
+└── requirements.txt
+```
 
-Actor (`CommNetActor`) iki adımda çalışır: `encode(obs)` → hidden state, sonra adjacency ile `aggregate_and_policy`. İkisi ayrı method, çünkü fault'u **mesaj seviyesinde** (encode sonrası, aggregation öncesi) enjekte etmek gerekiyor.
+## Demo GIF'ler
 
-Detector beş sinyal üretir: `z_self`, `z_cv`, `z_fleet`, `cos_drop`, `coherence_drop`. Norm ve direction bazlı sinyallerin birleşimi sign-flip + random Byzantine'i de yakalıyor. Simetrik histerezi (set K=3, clear M=5) FP filtresi.
+Eğitilmiş policy'lerin `simple_spread_v3` ortamındaki davranışları (seed=0, 150 adım).
 
-Strategy C tetiklenince `TopologyManager` faulty agent'ın in/out edge'lerini sıfırlar, self-loop kalır.
-
-## Demo Rollouts
-
-Eğitilmiş policy'lerin `simple_spread_v3` ortamındaki davranışları. Tüm GIF'ler `seed=0`, 100 step.
-
-### No-fault baseline
-
-| A (naive) | B (curriculum) | C (detect+adapt) |
-|-----------|----------------|-------------------|
-| ![](renders/demo_A_S1_nofault_seed0.gif) | ![](renders/demo_B_S1_nofault_seed0.gif) | ![](renders/demo_C_S1_nofault_seed0.gif) |
-
-### Fail-stop senaryosu
-
-| A (naive) | B (curriculum) | C (detect+adapt) |
-|-----------|----------------|-------------------|
-| ![](renders/demo_A_S2_fail_stop_seed0.gif) | ![](renders/demo_B_S2_fail_stop_seed0.gif) | ![](renders/demo_C_S2_fail_stop_seed0.gif) |
-
-### Byzantine senaryosu
-
-> **Day 9'un asıl bulgusu:** B byzantine'de coverage 0.145'e çöker, C topology reconfiguration ile 0.584'te stabil kalır. Aşağıda B'nin dağınık hareketleri ile C'nin koordineli landmark kaplaması görülebilir.
+### Arızasız (S1)
 
 | A (naive) | B (curriculum) | C (detect+adapt) |
-|-----------|----------------|-------------------|
-| ![](renders/demo_A_S3_byzantine_seed0.gif) | ![](renders/demo_B_S3_byzantine_seed0.gif) | ![](renders/demo_C_S3_byzantine_seed0.gif) |
+|---|---|---|
+| ![](renders_new/day9_v2_A_S1_nofault_seed0.gif) | ![](renders_new/day9_v2_B_S1_nofault_seed0.gif) | ![](renders_new/day9_v2_C_S1_nofault_seed0.gif) |
 
-### Intermittent senaryosu
+### Fail-stop (S2)
 
 | A (naive) | B (curriculum) | C (detect+adapt) |
-|-----------|----------------|-------------------|
-| ![](renders/demo_A_S4_intermittent_seed0.gif) | ![](renders/demo_B_S4_intermittent_seed0.gif) | ![](renders/demo_C_S4_intermittent_seed0.gif) |
+|---|---|---|
+| ![](renders_new/day9_v2_A_S2_fail_stop_seed0.gif) | ![](renders_new/day9_v2_B_S2_fail_stop_seed0.gif) | ![](renders_new/day9_v2_C_S2_fail_stop_seed0.gif) |
+
+### Byzantine (S3)
+
+> A tamamen çöküyor (coverage ≈ 0.06). B curriculum ile kısmen adapte oluyor (0.43, seed'e göre değişken). C arızalı ajanı tespit edip grafikten çıkarıyor ve stabil koordinasyon sağlıyor (0.628).
+
+| A (naive) | B (curriculum) | C (detect+adapt) |
+|---|---|---|
+| ![](renders_new/day9_v2_A_S3_byzantine_seed0.gif) | ![](renders_new/day9_v2_B_S3_byzantine_seed0.gif) | ![](renders_new/day9_v2_C_S3_byzantine_seed0.gif) |
+
+### Intermittent (S4)
+
+| A (naive) | B (curriculum) | C (detect+adapt) |
+|---|---|---|
+| ![](renders_new/day9_v2_A_S4_intermittent_seed0.gif) | ![](renders_new/day9_v2_B_S4_intermittent_seed0.gif) | ![](renders_new/day9_v2_C_S4_intermittent_seed0.gif) |
